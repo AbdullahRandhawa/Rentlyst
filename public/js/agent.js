@@ -11,7 +11,6 @@
     const sendBtn = document.getElementById('sendBtn');
     const historyList = document.getElementById('historyList');
     const listingsPanel = document.getElementById('listingsPanel');
-    const listingsEmpty = document.getElementById('listingsEmpty');
     const matchCount = document.getElementById('matchCount');
     const newChatBtn = document.getElementById('newChatBtn');
 
@@ -156,7 +155,7 @@
         isLoading = true;
 
         const typing = showTyping();
-        let agentBubble = null;
+        let agentBubble = null;  // the ONE bubble for the entire response
 
         try {
             const res = await fetch('/agent/message', {
@@ -181,7 +180,12 @@
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
-            let rawText = '';
+
+            // Single-bubble state
+            let phase = 'bridge';      // 'bridge' | 'final'
+            let bridgeText = '';       // LLM #1 clean chat text
+            let finalText  = '';       // LLM #2 final advisor text
+            let finalSpan  = null;     // live-update span inside bubble for LLM #2
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -199,31 +203,98 @@
                     if (event.type === 'meta') {
                         currentConversationId = event.conversationId;
                         updateHistory(event.conversationId, event.conversationTitle);
+
+                    } else if (event.type === 'listings') {
                         if (event.matchedListings && event.matchedListings.length > 0) {
                             updateListingsSidebar(event.matchedListings);
                         }
 
                     } else if (event.type === 'token') {
+                        if (phase === 'bridge') {
+                            // LLM #1 tokens — stream into the single bubble
+                            if (!agentBubble) {
+                                typing.remove();
+                                agentBubble = createStreamingBubble();
+                            }
+                            bridgeText += event.content;
+                            bridgeText = bridgeText.trimStart(); // Prevent leading newlines from breaking top padding
+                            agentBubble.innerHTML = parseMarkdown(bridgeText);
+                            scrollToBottom();
+
+                        } else if (phase === 'final') {
+                            if (finalSpan) {
+                                // Remove chip on first token
+                                document.getElementById('searchStatusChip')?.remove();
+                                finalText += event.content;
+                                finalText = finalText.trimStart(); // Prevent leading newlines from breaking top padding
+                                finalSpan.innerHTML = parseMarkdown(finalText);
+                                scrollToBottom();
+                            }
+                        }
+
+                    } else if (event.type === 'searching') {
+                        // Transition: LLM #1 done → search running → LLM #2 incoming
+                        phase = 'final';
+
                         if (!agentBubble) {
+                            // No bridge tokens came (edge case) — create bubble now
                             typing.remove();
                             agentBubble = createStreamingBubble();
                         }
-                        rawText += event.content;
-                        agentBubble.textContent = rawText;
+
+                        // Render bridge section as markdown inside the bubble
+                        agentBubble.innerHTML = parseMarkdown(bridgeText);
+
+                        // Container for the bottom section
+                        const finalContainer = document.createElement('div');
+                        finalContainer.id = 'finalContainer';
+                        finalContainer.style.marginTop = '1rem';
+                        
+                        const chipEl = document.createElement('div');
+                        chipEl.className = 'search-chip';
+                        chipEl.id = 'searchStatusChip';
+                        chipEl.style.display = 'inline-flex';
+                        chipEl.innerHTML = `<span class="search-chip-dot"></span> Scanning inventory...`;
+                        finalContainer.appendChild(chipEl);
+
+                        finalSpan = document.createElement('div');
+                        finalSpan.id = 'finalStream';
+                        finalContainer.appendChild(finalSpan);
+
+                        agentBubble.appendChild(finalContainer);
+
+                        agentBubble.classList.add('streaming'); // keep cursor blinking
                         scrollToBottom();
 
                     } else if (event.type === 'done') {
+                        // Remove chip & finalSpan placeholders
+                        document.getElementById('searchStatusChip')?.remove();
+                        document.getElementById('finalStream')?.remove();
+
                         if (agentBubble) {
                             agentBubble.classList.remove('streaming');
-                            agentBubble.innerHTML = parseMarkdown(rawText);
+                            if (phase === 'final' && finalText.trim()) {
+                                agentBubble.innerHTML = 
+                                    parseMarkdown(bridgeText) + 
+                                    '<div style="margin-top: 1rem;">' + 
+                                    parseMarkdown(finalText) + 
+                                    '</div>';
+                            } else {
+                                // Path A: just the bridge / chit-chat response
+                                agentBubble.innerHTML = parseMarkdown(bridgeText);
+                            }
                         } else {
                             typing.remove();
-                            if (rawText.trim()) appendMessage('agent', rawText);
+                            const combined = phase === 'final' && finalText.trim() ? finalText : bridgeText;
+                            if (combined.trim()) appendMessage('agent', combined);
                         }
                         scrollToBottom();
 
                     } else if (event.type === 'error') {
+                        document.getElementById('searchStatusChip')?.remove();
+                        document.getElementById('finalStream')?.remove();
                         if (agentBubble) {
+                            agentBubble.classList.remove('streaming');
                             agentBubble.textContent = event.message || 'Stream interrupted. Please try again.';
                         } else {
                             typing.remove();
@@ -233,15 +304,21 @@
                 }
             }
 
-            // Safety net: if 'done' event never fired
-            if (!agentBubble && rawText.trim()) {
-                typing.remove();
-                appendMessage('agent', rawText);
-            } else if (agentBubble) {
+            // Safety net: stream closed without a 'done' event
+            document.getElementById('searchStatusChip')?.remove();
+            document.getElementById('finalStream')?.remove();
+            if (agentBubble) {
                 agentBubble.classList.remove('streaming');
+                if (!agentBubble.innerHTML.trim() || agentBubble.querySelector('.typing-dots')) {
+                    const combined = phase === 'final' && finalText.trim()
+                        ? parseMarkdown(bridgeText) + '<div style="margin-top: 1rem;">' + parseMarkdown(finalText) + '</div>'
+                        : parseMarkdown(bridgeText);
+                    agentBubble.innerHTML = combined;
+                }
             }
-
         } catch (err) {
+            document.getElementById('searchStatusChip')?.remove();
+            document.getElementById('finalStream')?.remove();
             if (!agentBubble) typing.remove();
             appendMessage('agent', 'Sorry, I encountered an error. Please try again.');
             console.error('Agent stream error:', err);

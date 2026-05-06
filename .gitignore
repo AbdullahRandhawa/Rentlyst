@@ -26,3 +26,5 @@ logs/
 # System Files
 .DS_Store
 Thumbs.db
+
+build-and-push.ps1

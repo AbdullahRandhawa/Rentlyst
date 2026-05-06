@@ -824,7 +824,9 @@ body:has(.agent-container) .container.flex-grow-1>.row {
    Dark Mode Overrides
    ========================================================================== */
 
-[data-theme="dark"] .agent-container { background: #141414; }
+[data-theme="dark"] .agent-container {
+    background: #141414;
+}
 
 [data-theme="dark"] .agent-history,
 [data-theme="dark"] .agent-listings {
@@ -843,20 +845,38 @@ body:has(.agent-container) .container.flex-grow-1>.row {
     color: var(--text-dark);
 }
 
-[data-theme="dark"] .history-item { color: var(--text-muted); }
-[data-theme="dark"] .history-item:hover { background: var(--bg-tertiary); color: var(--text-dark); }
-[data-theme="dark"] .history-item.active { background: rgba(255, 56, 92, 0.15); color: var(--primary); }
+[data-theme="dark"] .history-item {
+    color: var(--text-muted);
+}
 
-[data-theme="dark"] .agent-chat { background: var(--bg-main); }
+[data-theme="dark"] .history-item:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-dark);
+}
 
-[data-theme="dark"] .welcome-screen h4 { color: var(--text-dark); }
-[data-theme="dark"] .welcome-screen p { color: var(--text-muted); }
+[data-theme="dark"] .history-item.active {
+    background: rgba(255, 56, 92, 0.15);
+    color: var(--primary);
+}
+
+[data-theme="dark"] .agent-chat {
+    background: var(--bg-main);
+}
+
+[data-theme="dark"] .welcome-screen h4 {
+    color: var(--text-dark);
+}
+
+[data-theme="dark"] .welcome-screen p {
+    color: var(--text-muted);
+}
 
 [data-theme="dark"] .quick-btn {
     background: var(--bg-secondary);
     border-color: var(--bg-tertiary);
     color: var(--text-dark);
 }
+
 [data-theme="dark"] .quick-btn:hover {
     background: var(--bg-tertiary);
     border-color: var(--primary);
@@ -867,6 +887,7 @@ body:has(.agent-container) .container.flex-grow-1>.row {
     background: var(--bg-secondary);
     color: var(--text-dark);
     border-color: var(--bg-tertiary);
+    border-left: 3px solid var(--primary);
 }
 
 [data-theme="dark"] .message-bubble h1,
@@ -878,8 +899,13 @@ body:has(.agent-container) .container.flex-grow-1>.row {
     color: var(--text-dark);
 }
 
-[data-theme="dark"] .message-bubble strong { color: var(--text-dark); }
-[data-theme="dark"] .message-bubble code { background: var(--bg-tertiary); }
+[data-theme="dark"] .message-bubble strong {
+    color: var(--text-dark);
+}
+
+[data-theme="dark"] .message-bubble code {
+    background: var(--bg-tertiary);
+}
 
 [data-theme="dark"] .typing-dots {
     background: var(--bg-secondary);
@@ -890,22 +916,93 @@ body:has(.agent-container) .container.flex-grow-1>.row {
     background: var(--bg-secondary);
     border-color: var(--bg-tertiary);
 }
-[data-theme="dark"] #chatInput { color: var(--text-dark); }
-[data-theme="dark"] #chatInput::placeholder { color: var(--text-muted); }
+
+[data-theme="dark"] #chatInput {
+    color: var(--text-dark);
+}
+
+[data-theme="dark"] #chatInput::placeholder {
+    color: var(--text-muted);
+}
 
 [data-theme="dark"] .sidebar-listing-card {
     background: var(--bg-secondary);
     border-color: var(--bg-tertiary);
 }
-[data-theme="dark"] .sidebar-listing-card:hover { border-color: var(--primary); }
-[data-theme="dark"] .listing-card-title { color: var(--text-dark); }
-[data-theme="dark"] .listing-card-price { color: var(--text-dark); }
-[data-theme="dark"] .listing-card-img { background: var(--bg-tertiary); }
-[data-theme="dark"] .match-count { background: var(--bg-tertiary); color: var(--text-dark); }
+
+[data-theme="dark"] .sidebar-listing-card:hover {
+    border-color: var(--primary);
+}
+
+[data-theme="dark"] .listing-card-title {
+    color: var(--text-dark);
+}
+
+[data-theme="dark"] .listing-card-price {
+    color: var(--text-dark);
+}
+
+[data-theme="dark"] .listing-card-img {
+    background: var(--bg-tertiary);
+}
+
+[data-theme="dark"] .match-count {
+    background: var(--bg-tertiary);
+    color: var(--text-dark);
+}
 
 [data-theme="dark"] .history-toggle,
 [data-theme="dark"] .listings-toggle {
     background: var(--bg-secondary);
     border-color: var(--bg-tertiary);
     color: var(--text-dark);
+}
+
+/* ==========================================================================
+   Search Status Chip — shown between LLM #1 bridge text and LLM #2 response
+   ========================================================================== */
+
+.search-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: #fff;
+    border: 1px solid #e8eaed;
+    border-left: 3px solid var(--primary);
+    border-radius: 12px;
+    padding: 0.55rem 1rem;
+    font-size: 0.83rem;
+    color: #555;
+    font-style: italic;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+    animation: slideIn 0.25s ease;
+}
+
+.search-chip-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--primary);
+    flex-shrink: 0;
+    animation: chipPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes chipPulse {
+
+    0%,
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+
+    50% {
+        opacity: 0.4;
+        transform: scale(0.75);
+    }
+}
+
+[data-theme="dark"] .search-chip {
+    background: var(--bg-secondary);
+    border-color: var(--bg-tertiary);
+    color: var(--text-muted);
 }

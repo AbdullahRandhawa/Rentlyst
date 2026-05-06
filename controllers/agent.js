@@ -1,3 +1,14 @@
+/**
+ ============================================================================
+ CONTROLLER: Rentlyst AI Agent
+ ============================================================================
+ * This controller handles the core logic for the Rentlyst AI Assistant.
+ * It uses a highly optimized "Dual-Path Streaming Architecture":
+ - PATH A (Chit-Chat): Fast, conversational responses.
+ - PATH B (Search): Vector search + Contextual summary in a single UI bubble.
+ * Key Technologies: MongoDB Atlas Vector Search, Server-Sent Events (SSE), OpenRouter.
+ */
+
 const Conversation = require('../models/conversation');
 const Profile = require('../models/profile');
 const Listing = require('../models/listing');
@@ -13,15 +24,18 @@ const messageCooldown = new Map();
 const MESSAGE_COOLDOWN_MS = 2000;
 
 // ==========================================
-// HELPER FUNCTIONS
+// 1. HELPER: CONTEXT & PROFILE MANAGEMENT
 // ==========================================
 
 // Per-user cooldown: prevents summarization from firing more than once per 30s per user
 const summarizeCooldown = new Map(); // userId -> last run timestamp (ms)
 const SUMMARIZE_COOLDOWN_MS = 30 * 1000; // 30 seconds
 
-
-// Analyzes recent chat messages to update the UserProfile dossier/context.
+/**
+ * [FUNCTION 1]: summarizeUnsummarizedChats
+ * Analyzes recent chat messages in the background to update the UserProfile "Dossier".
+ * This gives the AI long-term memory of the user's preferences without bloating the prompt.
+ */
 async function summarizeUnsummarizedChats(userId) {
     const userKey = userId.toString();
     const now = Date.now();
@@ -112,10 +126,10 @@ STRICT INSTRUCTIONS:
 }
 
 /**
- * Build a sliding window of chat history for OpenAI messages format.
- * Takes the last few messages and merges consecutive identical roles to prevent API errors.
+ * [FUNCTION 2]: buildSlidingHistory
+ * Extracts the last N messages to provide immediate context for the AI model.
+ * Merges consecutive identical roles to prevent OpenAI API errors.
  */
-// Extracts the last N messages to provide immediate context for the AI model.
 function buildSlidingHistory(messages) {
     if (!messages || messages.length === 0) return [];
 
@@ -143,12 +157,16 @@ function buildSlidingHistory(messages) {
     return sanitized;
 }
 
+// ==========================================
+// 2. HELPER: VECTOR SEARCH ENGINE
+// ==========================================
+
 /**
- * Strict-to-Relaxed Vector Search.
- * Attempt 1: Atlas $vectorSearch with all extracted filters applied (category + city + specs).
- * Attempt 2: If zero results, relax spec filters but keep mainCategory + city + listingType locked.
- * Fallback:  Pure JS cosine scan if Atlas index not available.
- * Returns docs + a `isRelaxed` boolean flag so the agent knows to mention it.
+ * [FUNCTION 3]: performSearch
+ * Strict-to-Relaxed Vector Search Engine.
+ * - Attempt 1: Atlas $vectorSearch with strict filters (category + city + specs).
+ * - Attempt 2: Relaxed search (drops specific specs, keeps category + city).
+ * - Fallback: Standard cosine similarity scan if Atlas index is unavailable.
  */
 async function performSearch(queryVector, filters = {}) {
     const buildAtlasFilter = (includeSpecs) => {
@@ -256,9 +274,14 @@ async function performSearch(queryVector, filters = {}) {
     return scored;
 }
 
+// ==========================================
+// 3. HELPER: AI COMMUNICATION LAYERS
+// ==========================================
+
 /**
- * Try each LLM model in order. Returns first successful streaming response.
- * For non-streaming fallback calls (summarization etc.).
+ * [FUNCTION 4]: callLLMWithFallback
+ * Synchronous LLM calls (used for intent extraction, summarization).
+ * Automatically fails over to backup models if the primary model goes down.
  */
 async function callLLMWithFallback(messages, max_tokens) {
     let lastErr;
@@ -275,7 +298,8 @@ async function callLLMWithFallback(messages, max_tokens) {
 }
 
 /**
- * Try each LLM model in order, returning a stream.
+ * [FUNCTION 5]: callLLMStreamWithFallback
+ * Streaming LLM calls (used for real-time UI chat updates).
  * Returns { stream, model } for the first model that succeeds.
  */
 async function callLLMStreamWithFallback(messages, max_tokens) {
@@ -299,10 +323,14 @@ async function callLLMStreamWithFallback(messages, max_tokens) {
 }
 
 // ==========================================
-// CONTROLLER FUNCTIONS
+// 4. MAIN EXPORT CONTROLLERS
 // ==========================================
 
-// 1. RENDER AGENT PAGE
+/**
+ * [CONTROLLER 1]: renderAgent
+ * Renders the main agent interface view.
+ * Triggers a background summarization task to ensure the Dossier is fresh on load.
+ */
 module.exports.renderAgent = async (req, res) => {
     try {
         const conversations = await Conversation.find({ user: req.user._id })
@@ -327,9 +355,17 @@ module.exports.renderAgent = async (req, res) => {
         res.status(500).send('Internal Server Error');
     }
 };
-// 2. MAIN AGENT HANDLER
-// [METHOD: sendMessage]
-// The primary entry point (handleMessage) for user messages. Handles routing, search, and AI response.
+/**
+ * [CONTROLLER 2]: handleMessage
+ * The core engine of the AI. Handles real-time SSE streaming and dual-path logic.
+ * 
+ * Architecture Flow:
+ * - Phase 1: Context Loading -> Loads chat history and user dossier from DB.
+ * - Phase 2: Prime Agent (LLM #1) -> Streams chat live to UI while predicting user intent.
+ * - Phase 3: Route Decision -> Parses intent JSON to decide between Path A or Path B.
+ * - Phase 4 (Path A): Saves conversation and ends stream.
+ * - Phase 5 (Path B): Performs Vector Search -> Streams LLM #2 Advisor Response with search results.
+ */
 module.exports.handleMessage = async (req, res) => {
     try {
         const { message, conversationId } = req.body;
@@ -378,85 +414,164 @@ module.exports.handleMessage = async (req, res) => {
             ? userProfile.fullName
             : (userProfile && userProfile.username ? userProfile.username : 'the user');
 
-        // ── Step 2: Intent Extraction ──
-        // Runs on every message — LLM decides whether a vector search is needed.
+        // ── Step 2: Prime Agent — Streaming LLM #1 ──
+        // Single streaming call that simultaneously engages the user ([CHAT] section)
+        // and extracts search intent ([INTENT] JSON section).
+        // [CHAT] tokens are forwarded to the client live for instant TTFT.
+        // [INTENT] block is buffered and parsed after the stream ends.
         const catsJSON = JSON.stringify(CATEGORIES);
-        const intentExtractorPrompt = `Extract search parameters into JSON. Never hallucinate; use null for missing fields.
 
-RULES:
-1. VECTOR QUERY: Combine ALL extracted details (item, category, type, city, specs) into a descriptive 'searchQuery' of 2 to 3 sentences maximum.
-2. CATEGORIES: Map slang to EXACT valid categories you are provided with in the Valid Categories section:
-   - "Heavy Bike", "70cc", "Scooty", "Hayabusa", "Bike" -> mainCategory: "Vehicle", subCategory: "Motorcycles" and etc.
-   - "Flat", "Penthouse", "Studio", "1BHK" -> mainCategory: "Property", subCategory: "Apartments & Flats" and  if user says "Plot", "File", "Commercial Land", "DHA Phase 6 plot" -> mainCategory: "Property", subCategory: "Land & Plots" and etc
-   - "iPhone", "Macbook", "Tab", "Phone", "Laptop" -> mainCategory: "Item", subCategory: "Tech (Mobiles, Tablets, Laptops)" and etc.
-   - "AC Repair", "Wiring", "Electrician" -> mainCategory: "Service", subCategory: "Home Services (Plumber, Electrician, HVAC)" and et.
-3. CONTEXT: Keep old City/Country unless changed. If user switches topics entirely, drop old category filters.
-4. FIX TEXT(DATA STANDARDIZATION): Correct typos ("Mehraan"->Mehran, "Civicc" -> "Civic") and expand cities ("LHR"->Lahore, "KHI"->Karachi, "ISB"->Islamabad, "Pindi"->Rawalpindi).
-5. TRIGGER: needsSearch=true if asking for ANY searchable item/category/location (even partial). false for greetings/follow-ups and chit chat.
+        // The Prime Agent prompt: two strict output sections in one call.
+        // CHAT section: personalized, uses dossier + history.
+        // INTENT section: purely from the latest user message — no context contamination.
+        const primeAgentSystemPrompt = `You are "Rentlyst Prime" — a sharp, professional marketplace assistant.
+Your job is to respond to the user AND decide if a listing search is needed, in ONE single output.
 
-Valid Categories: ${catsJSON}
+You MUST output EXACTLY two sections with these delimiters, in this order:
 
-Output ONLY JSON:
-{
-  "searchQuery": "A rich, descriptive sentence combining all extracted filters and keywords for high-accuracy vector matching",
-  "filters": {
-    "mainCategory": "Item | Vehicle | Property | Service | null",
-    "subCategory": "Use the EXACT string from Valid Categories list | null",
-    "listingType": "Sale | Rent | null",
-    "city": "Standardized City Name | null",
-    "country": "Standardized Country Name | null",
-    "specifications": { "make": "string | null", "year": "number | null", "bedrooms": "number | null" }
-  },
-  "needsSearch": boolean
-}`;
+[CHAT]
+Your natural language reply to the user. Be engaging, professional and personalized.
+Use the User Dossier and chat history to build rapport.
+If needsSearch will be true: keep this SHORT (2-3 sentences max) — just acknowledge the request and say you are searching inventory. e.g. "On it — pulling up the best [item] options in [city] for you right now."
+If needsSearch will be false: give a full helpful reply here.
+[/CHAT]
+[INTENT]
+{"needsSearch": <boolean>, "searchQuery": "<rich 2-3 sentence description for vector search>", "filters": {"mainCategory": "<Item|Vehicle|Property|Service|null>", "subCategory": "<exact string from Valid Categories|null>", "listingType": "<Sale|Rent|null>", "city": "<Standardized city|null>", "country": "<Standardized country|null>", "specifications": {"make": "<string|null>", "year": "<number|null>", "bedrooms": "<number|null>"}}}
+[/INTENT]
 
+INTENT RULES (STRICT — no exceptions):
+- The [INTENT] block MUST be derived ONLY from the latest user message. Ignore all history and dossier for intent.
+- needsSearch=true if the user is asking for any searchable item, vehicle, property, or service (even partial).
+- needsSearch=false for greetings, chit-chat, follow-up questions, or non-search requests.
+- Map slang to exact categories: "Bike/Heavy Bike/Scooty" → Vehicle/Motorcycles. "Flat/Penthouse/1BHK" → Property/Apartments & Flats. "Plot/File" → Property/Land & Plots. "iPhone/Laptop/Tab" → Item/Tech. "Electrician/Plumber" → Service/Home Services.
+- Fix typos: "Mehraan"→Mehran, "Civicc"→Civic. Expand: "LHR"→Lahore, "KHI"→Karachi, "ISB"→Islamabad, "Pindi"→Rawalpindi.
+- Output ONLY valid JSON inside [INTENT] — no extra text.
+
+Valid Categories for INTENT mapping: ${catsJSON}
+
+USER DOSSIER (use for [CHAT] only):
+User Name: ${userDisplayName || 'Valued Client'}
+Identity/Preferences: ${userContextInfo}`;
+
+        // Open SSE headers immediately — before any LLM call — so the client
+        // starts receiving data the moment the first token arrives from LLM #1.
+        if (conversation.isNew) await conversation.save();
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+
+        // Send metadata immediately (conversation ID)
+        res.write(`data: ${JSON.stringify({
+            type: 'meta',
+            conversationId: conversation._id,
+            conversationTitle: conversation.title
+        })}\n\n`);
+
+        // ── Stream LLM #1 and parse dual-section output ──
+        const primeMessages = [
+            { role: 'system', content: primeAgentSystemPrompt },
+            ...chatHistory,
+            { role: 'user', content: message }
+        ];
+
+        // Token budget: generous enough for a full chit-chat reply + INTENT JSON
+        const { stream: primeStream } = await callLLMStreamWithFallback(primeMessages, 900);
+
+        let primeFullOutput = '';
+        let inChatSection = false;
+        let chatSectionDone = false;
+        let forwardedChat = '';    // clean text we actually sent to client
+        let forwardBuffer = '';   // chars held back to prevent partial-tag leakage
+        let preTagBuffer = '';    // chars before [CHAT] opens
+        const LOOKAHEAD = 12;     // hold back enough chars to catch any delimiter
+
+        // State machine: forward [CHAT] tokens live, never leak delimiters to client
+        for await (const chunk of primeStream) {
+            const rawDelta = chunk.choices[0]?.delta;
+            let delta = '';
+            if (typeof rawDelta?.content === 'string') {
+                delta = rawDelta.content;
+            } else if (Array.isArray(rawDelta?.content)) {
+                delta = rawDelta.content.filter(b => b.type === 'text').map(b => b.text || '').join('');
+            }
+            if (!delta) continue;
+
+            primeFullOutput += delta;
+
+            if (chatSectionDone) continue; // already past [CHAT] section
+
+            // Stop condition: [/CHAT] or [INTENT] has fully appeared
+            const stopDetected = primeFullOutput.includes('[/CHAT]') || primeFullOutput.includes('[INTENT]');
+
+            if (stopDetected) {
+                chatSectionDone = true;
+                // Flush the exact remaining characters of the [CHAT] block
+                const chatMatch = primeFullOutput.match(/\[CHAT\]([\s\S]*?)(\[\/CHAT\]|\[INTENT\])/);
+                if (chatMatch) {
+                    const fullChatText = chatMatch[1];
+                    if (fullChatText.length > forwardedChat.length) {
+                        const unsent = fullChatText.slice(forwardedChat.length);
+                        forwardedChat += unsent;
+                        res.write(`data: ${JSON.stringify({ type: 'token', content: unsent })}\n\n`);
+                    }
+                }
+                forwardBuffer = '';
+            } else if (!inChatSection) {
+                // Still looking for [CHAT] opening tag
+                preTagBuffer += delta;
+                if (preTagBuffer.includes('[CHAT]')) {
+                    inChatSection = true;
+                    const afterTag = preTagBuffer.split('[CHAT]').slice(1).join('[CHAT]');
+                    forwardBuffer = afterTag;
+                    preTagBuffer = '';
+                    // Flush safe portion of forwardBuffer (hold back LOOKAHEAD chars)
+                    if (forwardBuffer.length > LOOKAHEAD) {
+                        const toFlush = forwardBuffer.slice(0, forwardBuffer.length - LOOKAHEAD);
+                        forwardedChat += toFlush;
+                        res.write(`data: ${JSON.stringify({ type: 'token', content: toFlush })}\n\n`);
+                        forwardBuffer = forwardBuffer.slice(-LOOKAHEAD);
+                    }
+                }
+            } else {
+                // Inside [CHAT], no stop tag yet — flush with lookahead buffer
+                forwardBuffer += delta;
+                if (forwardBuffer.length > LOOKAHEAD) {
+                    const toFlush = forwardBuffer.slice(0, forwardBuffer.length - LOOKAHEAD);
+                    forwardedChat += toFlush;
+                    res.write(`data: ${JSON.stringify({ type: 'token', content: toFlush })}\n\n`);
+                    forwardBuffer = forwardBuffer.slice(-LOOKAHEAD);
+                }
+            }
+        }
+
+        // ── Parse [INTENT] from the full LLM #1 output ──
         let queryAnalysis = { needsSearch: false, searchQuery: message, filters: {} };
         try {
-            const analysisMessages = [
-                { role: 'system', content: intentExtractorPrompt },
-                ...chatHistory,
-                { role: 'user', content: message }
-            ];
-            const analysisResult = await callLLMWithFallback(analysisMessages, 2000);
-            let content = analysisResult?.choices?.[0]?.message?.content;
-            // Some reasoning models (Nemotron etc.) return content as an array of blocks
-            if (Array.isArray(content)) {
-                content = content.filter(b => b.type === 'text').map(b => b.text || '').join('');
-            }
-            if (!content) throw new Error('Intent extractor returned null content.');
-            const cleaned = content.trim().replace(/```json/gi, '').replace(/```/g, '').trim();
-            const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) throw new Error('No JSON found in intent extractor response.');
+            const intentMatch = primeFullOutput.match(/\[INTENT\]([\s\S]*?)\[\/INTENT\]/);
+            if (!intentMatch) throw new Error('No [INTENT] block found in prime output.');
+            const intentRaw = intentMatch[1].trim().replace(/```json/gi, '').replace(/```/g, '').trim();
+            const jsonMatch = intentRaw.match(/\{[\s\S]*\}/);
+            if (!jsonMatch) throw new Error('No JSON object in [INTENT] block.');
             const parsed = JSON.parse(jsonMatch[0]);
-            console.log('[Intent Extractor] needsSearch:', parsed.needsSearch, '| query:', parsed.searchQuery);
-            console.log('[Intent Extractor] filters:', JSON.stringify(parsed.filters));
+            console.log('[Prime Agent] needsSearch:', parsed.needsSearch, '| query:', parsed.searchQuery);
+            console.log('[Prime Agent] filters:', JSON.stringify(parsed.filters));
             queryAnalysis = {
                 needsSearch: !!parsed.needsSearch,
                 searchQuery: parsed.searchQuery || message,
                 filters: parsed.filters || {}
             };
-        } catch (analyzerErr) {
-            console.log('[Intent Extractor] Failed. Setting search to false. Reason:', analyzerErr.message);
-            queryAnalysis = { searchQuery: message, filters: {}, needsSearch: false };
+        } catch (parseErr) {
+            console.warn('[Prime Agent] INTENT parse failed, defaulting to no-search. Reason:', parseErr.message);
         }
 
-        // ── Step 3: Embed & Search (if needed) ──
-        let matchedListingsDocs = [];
-        let searchWasRelaxed = false;
+        // Extract the clean [CHAT] text for DB saving (Path A uses this)
+        const chatMatch = primeFullOutput.match(/\[CHAT\]([\s\S]*?)\[\/CHAT\]/);
+        const primeChat = chatMatch ? chatMatch[1].trim() : forwardedChat.trim();
 
-        if (queryAnalysis.needsSearch) {
-            try {
-                // [AI CALL]: Uses embedding.js to generate vector for user search query
-                const queryVector = await generateEmbedding(queryAnalysis.searchQuery, 'query');
-                if (queryVector) {
-                    matchedListingsDocs = await performSearch(queryVector, queryAnalysis.filters);
-                    searchWasRelaxed = matchedListingsDocs.isRelaxed === true;
-                }
-            } catch (searchErr) {
-                console.error('[Search] Vector search failed:', searchErr.message);
-            }
-        } else {
-            // Retrieve previous listings from the conversation state
+        // ── PATH A: No search needed — done after LLM #1 ──
+        if (!queryAnalysis.needsSearch) {
+            // Retrieve previous listings from the conversation state for context continuity
             let previousIds = [];
             for (let i = conversation.messages.length - 1; i >= 0; i--) {
                 if (conversation.messages[i].role === 'agent' && conversation.messages[i].matchedListings?.length > 0) {
@@ -465,8 +580,50 @@ Output ONLY JSON:
                 }
             }
             if (previousIds.length > 0) {
-                matchedListingsDocs = await Listing.find({ _id: { $in: previousIds } });
+                const prevListings = await Listing.find({ _id: { $in: previousIds } }).select('title city listingType price rentalPeriod image').lean();
+                const prevPayload = prevListings.map(l => ({
+                    _id: l._id, title: l.title, city: l.city, listingType: l.listingType,
+                    price: l.price, rentalPeriod: l.rentalPeriod,
+                    image: l.image && l.image.length > 0 ? l.image[0].url : ''
+                }));
+                if (prevPayload.length > 0) {
+                    res.write(`data: ${JSON.stringify({ type: 'listings', matchedListings: prevPayload })}\n\n`);
+                }
             }
+
+            res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+            res.end();
+
+            console.log(`[Prime Agent Path A] Chat response length: ${primeChat.length} chars`);
+
+            if (primeChat) {
+                conversation.messages.push({ role: 'user', content: message, matchedListings: [] });
+                conversation.messages.push({ role: 'agent', content: primeChat, matchedListings: previousIds });
+                await conversation.save();
+                const unsummarizedCount = conversation.messages.length - (conversation.lastSummarizedIndex || 0);
+                if (unsummarizedCount >= 3) {
+                    summarizeUnsummarizedChats(req.user._id).catch(e => console.error('[Summarizer Error]:', e));
+                }
+                console.log(`[Agent DB] Saved conversation ${conversation._id}`);
+            }
+            return;
+        }
+
+        // ── PATH B: Search needed — emit 'searching', run embedding+search, stream LLM #2 ──
+        res.write(`data: ${JSON.stringify({ type: 'searching' })}\n\n`);
+
+        // ── Step 3: Embed & Search ──
+        let matchedListingsDocs = [];
+        let searchWasRelaxed = false;
+        try {
+            // [AI CALL]: Uses embedding.js to generate vector for user search query
+            const queryVector = await generateEmbedding(queryAnalysis.searchQuery, 'query');
+            if (queryVector) {
+                matchedListingsDocs = await performSearch(queryVector, queryAnalysis.filters);
+                searchWasRelaxed = matchedListingsDocs.isRelaxed === true;
+            }
+        } catch (searchErr) {
+            console.error('[Search] Vector search failed:', searchErr.message);
         }
 
         const matchedListingIds = matchedListingsDocs.map(l => l._id);
@@ -480,122 +637,94 @@ Output ONLY JSON:
             image: l.image && l.image.length > 0 ? l.image[0].url : ''
         }));
 
-        // ── Step 4: Final AI Response Generation (Smart Advisor) ──
-        // We send the FULL listing data as a JSON block to the LLM.
-        // This ensures the agent sees Price, Specs, and Reviews, even though
-        // those were excluded from the Vector Embedding to reduce noise.
+        // Send listings to the sidebar now that we have them
+        res.write(`data: ${JSON.stringify({ type: 'listings', matchedListings: matchedListingsPayload })}\n\n`);
+
+        // ── Step 4: Final Advisor Response (LLM #2) ──
         const listingsContext = matchedListingsDocs.length > 0
             ? JSON.stringify(matchedListingsDocs.map(l => {
                 const obj = (typeof l.toObject === 'function') ? l.toObject() : l;
                 delete obj.listingVector; // Don't waste tokens on the math array
                 return obj;
             }), null, 2)
-            : "NO CURRENT STOCK AVAILABLE";
+            : 'NO CURRENT STOCK AVAILABLE';
 
         if (matchedListingsDocs.length > 0) {
-            console.log("\n[AGENT DEBUG] Sending JSON Context to LLM. First item sample:");
+            console.log('\n[AGENT DEBUG] Sending JSON Context to LLM #2. First item sample:');
             const firstItem = (typeof matchedListingsDocs[0].toObject === 'function') ? matchedListingsDocs[0].toObject() : matchedListingsDocs[0];
             const debugObj = { ...firstItem };
             delete debugObj.listingVector;
             console.log(JSON.stringify(debugObj, null, 2));
-            console.log("-----------------------------------------------\n");
+            console.log('-----------------------------------------------\n');
         }
+
         const dynamicSystemPrompt = `You are "Rentlyst Executive Lead" — a high-performing, bold, and expert marketplace manager. You move fast, speak with authority, and act as a professional closer for our clients.
 
 **USER DOSSIER:**
-User Name: ${userDisplayName || "Valued Client"}
+User Name: ${userDisplayName || 'Valued Client'}
 Identity/Preferences: ${userContextInfo}
 
 **CURRENT MARKET DATA:**
 Query: "${queryAnalysis.searchQuery}"
-Inventory Status: ${searchWasRelaxed ? "Relaxed Match (Inventory filtered to best available)" : "Exact Match Found"}
+Inventory Status: ${searchWasRelaxed ? 'Relaxed Match (Inventory filtered to best available)' : 'Exact Match Found'}
 
 LISTINGS (JSON format):
-${listingsContext || "NO CURRENT STOCK AVAILABLE"}
+${listingsContext}
 
 **THE PROFESSIONAL SELLER'S RULES:**
-1. **JSON Intelligence**: You must parse the provided JSON data to see the full details (Price, Specs, and Review Summaries). Even though the search was performed via vector matching, you have the full raw data in front of you. Use it to be precise.
-2. **Inventory Integrity**: Discuss ONLY the listings provided or engage in professional dialogue. If an item is not in the stock list, it does not exist on our floor. Do not hallucinate outside inventory.
-3. **Handle Scarcity**: If the LISTINGS block is empty or says 'NO CURRENT STOCK,' you MUST NOT invent, imagine, or suggest any specific items, prices, or names. Instead, ask the user for more details to start a proper search.
-4. **The "Pitch" Style**: Be decisive and confident. Use phrases like "This is the ideal match for you" or "Based on market trends, this is a move-fast deal." Prove your expertise by linking listings to the client's known standards.
-4. **Information Protocol**: If the user asks for personal details (like their name or background), check the User Dossier and answer accurately and professionally. If they ask for outside data, offer to pull it for them but stay focused on the partnership.
-5. **Tone Discipline**: Maintain a high-status, efficient, and professional tone. You are an expert partner, not a service bot. 
-6. **Adaptive Communication**: Be personable. If the user asks for a joke or a specific non-business answer, provide it appropriately, but always bridge the conversation back to your role as their executive manager.
+1. **JSON Intelligence**: Parse the JSON above for full details (Price, Specs, Review Summaries). Use it to be precise.
+2. **Inventory Integrity**: Discuss ONLY the listings provided. Do not hallucinate items outside the stock list.
+3. **Handle Scarcity**: If LISTINGS says 'NO CURRENT STOCK', do NOT invent items. Ask for more details to refine the search.
+4. **The "Pitch" Style**: Be decisive and confident. Use phrases like "This is the ideal match" or "Move-fast deal."
+5. **Information Protocol**: If user asks for their own details, check the User Dossier and answer accurately.
+6. **Tone Discipline**: High-status, efficient, professional. Expert partner, not a service bot.
 
 **RESPONSE STRUCTURE (Concise & Professional):**
-- **NO HEADINGS. NO BULLET POINTS (except for listing the items).**
-- For listings: Use conversational style and talk about main details in the format "#N | Name, price and Location . As of  Market Verdict (Expert opinion on the value)." 
-- List items in the EXACT sequential order provided in the data.
-- Use past history to build trust: "Previously, we discussed [Detail]. This [Listing] addresses that requirement perfectly."
-- **Closing**: End with a directive statement  (e.g., "Should I lock this in?" or "Which one are we viewing first? or something betetr a ccording to situation"). Avoid corporate filler.`;
-        const messages = [
+- NO HEADINGS. NO BULLET POINTS (except for listing items).
+- For each listing: "#N | Title, Price, Location — Market Verdict (one sentence expert opinion)."
+- List items in EXACT sequential order from the data.
+- Use past history to build trust where relevant.
+- End with a directive closing statement.`;
+
+        const finalMessages = [
             { role: 'system', content: dynamicSystemPrompt },
             ...chatHistory,
             { role: 'user', content: message }
         ];
 
-        // ── STREAMING RESPONSE via SSE ──
-        // Open a streaming connection to the LLM and pipe tokens to the browser
-        // as they arrive. This gives a near-instant perceived response time.
-        const { stream } = await callLLMStreamWithFallback(messages, 2000);
-        // Pre-save new conversations before streaming so the meta event _id is
-        // immediately loadable from history (no race condition).
-        if (conversation.isNew) await conversation.save();
+        // Stream LLM #2 — full token budget for listing summaries
+        const { stream: finalStream } = await callLLMStreamWithFallback(finalMessages, 2000);
 
-        // Set SSE headers
-        res.setHeader('Content-Type', 'text/event-stream');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.setHeader('Connection', 'keep-alive');
-        res.flushHeaders();
-
-        // Send metadata first (conversation ID, matched listings) so the client
-        // can update the sidebar even before the first token arrives
-        res.write(`data: ${JSON.stringify({
-            type: 'meta',
-            conversationId: conversation._id,
-            conversationTitle: conversation.title,
-            matchedListings: matchedListingsPayload
-        })}\n\n`);
-
-        // Stream tokens as they arrive from the LLM
         let fullResponse = '';
-        for await (const chunk of stream) {
+        for await (const chunk of finalStream) {
             const rawDelta = chunk.choices[0]?.delta;
             let delta = '';
             if (typeof rawDelta?.content === 'string') {
-                // Standard models: content is a plain string
                 delta = rawDelta.content;
             } else if (Array.isArray(rawDelta?.content)) {
-                // Claude thinking models: content is an array — extract text blocks only
                 delta = rawDelta.content.filter(b => b.type === 'text').map(b => b.text || '').join('');
             }
-            // Ignore thinking/reasoning chunks — they have no visible content
             if (delta) {
                 fullResponse += delta;
                 res.write(`data: ${JSON.stringify({ type: 'token', content: delta })}\n\n`);
             }
         }
 
-        // Signal stream end
         res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
         res.end();
 
-        // Log the full response to terminal for debugging
-        console.log(`[Agent Response] Length: ${fullResponse.length} chars`);
+        console.log(`[Prime Agent Path B] LLM #2 response length: ${fullResponse.length} chars`);
         console.log(`[Agent Response] Preview: ${fullResponse.substring(0, 300)}${fullResponse.length > 300 ? '...' : ''}`);
 
-        // Save to DB after stream completes.
+        // Save LLM #2 response to DB (bridge text from LLM #1 is discarded — UX only)
         if (fullResponse.trim()) {
             conversation.messages.push({ role: 'user', content: message, matchedListings: [] });
             conversation.messages.push({ role: 'agent', content: fullResponse, matchedListings: matchedListingIds });
             await conversation.save();
-
-            // Trigger only if the new messages since last summary are 3 or more
             const unsummarizedCount = conversation.messages.length - (conversation.lastSummarizedIndex || 0);
             if (unsummarizedCount >= 3) {
-                summarizeUnsummarizedChats(req.user._id).catch(e => console.error("[Summarizer Error]:", e));
+                summarizeUnsummarizedChats(req.user._id).catch(e => console.error('[Summarizer Error]:', e));
             }
-
             console.log(`[Agent DB] Saved conversation ${conversation._id}`);
         }
     } catch (err) {
@@ -617,7 +746,10 @@ ${listingsContext || "NO CURRENT STOCK AVAILABLE"}
     }
 };
 
-// 3. GET ALL CONVERSATIONS
+/**
+ * [CONTROLLER 3]: getConversations
+ * Retrieves the user's historical conversations for the sidebar.
+ */
 module.exports.getConversations = async (req, res) => {
     const conversations = await Conversation.find({ user: req.user._id })
         .sort({ updatedAt: -1 })
@@ -627,7 +759,11 @@ module.exports.getConversations = async (req, res) => {
     res.json({ conversations });
 };
 
-// 4. GET SINGLE CONVERSATION (also triggers summarization on chat switch)
+/**
+ * [CONTROLLER 4]: getConversation
+ * Retrieves a single conversation's messages and linked listings.
+ * Also triggers the summarizer to clean up memory when switching chats.
+ */
 module.exports.getConversation = async (req, res) => {
     try {
         const conversation = await Conversation.findOne({
@@ -673,9 +809,10 @@ module.exports.getConversation = async (req, res) => {
     }
 };
 
-// 5. DELETE CONVERSATION
-// [METHOD: deleteConversation]
-// Deletes the specific AI conversation from the database.
+/**
+ * [CONTROLLER 5]: deleteConversation
+ * Deletes the specific AI conversation from the database.
+ */
 module.exports.deleteConversation = async (req, res) => {
     await Conversation.findOneAndDelete({ _id: req.params.id, user: req.user._id });
     res.json({ success: true });
