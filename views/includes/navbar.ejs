@@ -2,7 +2,7 @@
 <div class="nav-backdrop" id="navBackdrop"></div>
 
 <nav class="navbar sticky-top">
-  <div class="container-fluid px-2 px-lg-4 d-flex align-items-center justify-content-between gap-3">
+  <div class="container-fluid px-3 px-lg-4 d-flex align-items-center justify-content-between gap-3">
 
     <!-- Left Div: Brand -->
     <div class="d-flex align-items-center">
@@ -31,12 +31,15 @@
       <!-- Primary Links (Moved from left) -->
       <a class="nav-link nav-pill" href="/explore"><i class="fa-solid fa-compass fa-lg"></i><span
           class="d-none d-lg-inline ms-1">Explore</span></a>
-      <a class="nav-link nav-pill d-none d-md-flex align-items-center" href="/explore/new"><i
-          class="fa-solid fa-plus fa-lg"></i><span class="d-none d-lg-inline ms-1">Add Listing</span></a>
+
 
       <!-- Auth Links -->
       <% if(currUser) { %>
-        <a class="nav-link nav-pill d-none d-md-flex" href="/messages" style="position:relative; align-items: center;"
+        <a class="nav-link nav-pill d-none d-sm-flex align-items-center" href="/explore/new">
+          <i class="fa-solid fa-plus fa-lg"></i>
+          <span class="d-none d-lg-inline ms-1">Add Listing</span>
+        </a>
+        <a class="nav-link nav-pill" href="/messages" style="position:relative; align-items: center;"
           id="navMsgBtn">
           <i class="fa-regular fa-comment-dots fa-lg"></i>
           <span class="d-none d-lg-inline ms-1">Messages</span>
@@ -89,17 +92,23 @@
                 </div>
 
                 <!-- Mobile Avatar Hamburger -->
-                <div class="mobile-avatar-pill d-md-none ms-1" id="mobileMenuBtn"
-                  style="display:flex;align-items:center;gap:6px;">
-                  <% if(locals.currProfile && currProfile.profileImg && currProfile.profileImg.url) { %>
+                <div class="mobile-avatar-pill d-sm-none ms-1" id="mobileMenuBtn"
+                  style="display:flex;align-items:center;gap:2px;">
+                  <% if(typeof currProfile !=='undefined' && currProfile && currProfile.profileImg &&
+                    currProfile.profileImg.url) { %>
                     <img src="<%= currProfile.profileImg.url %>" alt="Avatar"
-                      style="width:28px;height:28px;border-radius:50%;object-fit:cover;">
-                    <% } %>
-                      <i class="fa-solid fa-bars"></i>
+                      style="width:25px;height:25px;border-radius:50%;object-fit:cover;">
+                    <% } else { %>
+                      <div
+                        style="width:23px;height:23px;border-radius:50%;background-color:#222;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.75rem;flex-shrink:0;">
+                        <%= currUser.username ? currUser.username.charAt(0).toUpperCase() : 'U' %>
+                      </div>
+                      <% } %>
+                        <i class="fa-solid fa-bars fa-xl"></i>
                 </div>
                 <% } else { %>
                   <!-- Mobile Login Hamburger -->
-                  <button class="mobile-menu-btn d-md-none ms-1" id="mobileMenuBtn" aria-label="Open menu">
+                  <button class="mobile-menu-btn d-sm-none ms-1" id="mobileMenuBtn" aria-label="Open menu">
                     <i class="fa-solid fa-bars"></i>
                   </button>
                   <% } %>
@@ -117,7 +126,7 @@
 <!-- Mobile Drawer -->
 <div class="mobile-drawer" id="mobileDrawer">
   <div class="drawer-header">
-    <span class="fw-semibold" style="font-size:1.05rem;">Menu</span>
+    <span class="fw-semibold" style="font-size:1.2Srem;">Menu</span>
     <button class="drawer-close" id="drawerClose" aria-label="Close">
       <i class="fa-solid fa-xmark"></i>
     </button>
@@ -134,41 +143,56 @@
   </div>
 
   <div class="drawer-nav">
-    <!-- Main Actions -->
-    <a class="drawer-link" href="/explore"><i class="fa-solid fa-compass"></i><span>Explore</span></a>
-    <a class="drawer-link" href="/explore/new"><i class="fa-solid fa-plus"></i><span>Add New Listing</span></a>
-
     <% if(currUser) { %>
-      <a class="drawer-link" href="/messages" style="position:relative;" id="drawerMsgBtn">
-        <i class="fa-regular fa-comment-dots fa-lg"></i>
-        <span>Messages</span>
-        <span id="drawerUnreadDot"
-          style="display:none;position:absolute;top:50%;right:12px;transform:translateY(-50%);width:9px;height:9px;background:#e63946;border-radius:50%;"></span>
-      </a>
-      <a class="drawer-link" href="/agent"><i class="fa-solid fa-robot"></i><span>Ask Rentlyst</span></a>
-
-      <div class="drawer-divider"></div>
-
-      <% if(currUser.role==='admin' ) { %>
-        <a class="drawer-link" href="/admin"><i class="fa-solid fa-shield-halved me-2"></i><span>Admin
-            Dashboard</span></a>
-        <div class="drawer-divider"></div>
-        <% } %>
-
-          <a class="drawer-link" href="/profile"><i class="fa-solid fa-user"></i><span>My Profile</span></a>
-          <a class="drawer-link drawer-link-danger" href="/logout"><i
-              class="fa-solid fa-right-from-bracket"></i><span>Log out</span></a>
+      <!-- User Profile Header -->
+      <a class="drawer-link" href="/profile" style="padding-top: 0.5rem; padding-bottom: 0.5rem;">
+        <% if(typeof currProfile !=='undefined' && currProfile && currProfile.profileImg && currProfile.profileImg.url)
+          { %>
+          <img src="<%= currProfile.profileImg.url %>" alt="Avatar"
+            style="width:28px;height:28px;border-radius:50%;object-fit:cover;flex-shrink:0;">
           <% } else { %>
-            <div class="drawer-divider"></div>
-            <a class="drawer-link" href="/signup"><i class="fa-solid fa-user-plus"></i><span>Sign up</span></a>
-            <a class="drawer-link drawer-link-primary" href="/login"><i
-                class="fa-solid fa-right-to-bracket"></i><span>Log in</span></a>
+            <div
+              style="width:20px;height:20px;border-radius:50%;background-color:#222;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.75rem;flex-shrink:0;">
+              <%= currUser.username ? currUser.username.charAt(0).toUpperCase() : 'U' %>
+            </div>
             <% } %>
+              <span class="fw-bold" style="font-size: 1.05rem;">My Profile</span>
+      </a>
+      <div class="drawer-divider"></div>
+      <% } %>
 
-              <div class="drawer-divider"></div>
-              <!-- Settings -->
-              <a class="drawer-link dark-mode-toggle" href="#" onclick="event.preventDefault();"><i
-                  class="fa-solid fa-moon dark-mode-icon"></i><span>Toggle Theme</span></a>
+        <!-- Main Actions -->
+        <a class="drawer-link" href="/explore"><i class="fa-solid fa-compass"></i><span>Explore</span></a>
+        <a class="drawer-link" href="/explore/new"><i class="fa-solid fa-plus"></i><span>Add New Listing</span></a>
+
+        <% if(currUser) { %>
+          <a class="drawer-link" href="/messages" style="position:relative;" id="drawerMsgBtn">
+            <i class="fa-regular fa-comment-dots fa-lg"></i>
+            <span>Messages</span>
+            <span id="drawerUnreadDot"
+              style="display:none;position:absolute;top:50%;right:12px;transform:translateY(-50%);width:9px;height:9px;background:#e63946;border-radius:50%;"></span>
+          </a>
+          <a class="drawer-link" href="/agent"><i class="fa-solid fa-robot"></i><span>Ask Rentlyst</span></a>
+
+          <div class="drawer-divider"></div>
+
+          <% if(currUser.role==='admin' ) { %>
+            <a class="drawer-link" href="/admin"><i class="fa-solid fa-shield-halved"></i><span>Admin
+                Dashboard</span></a>
+            <% } %>
+              <a class="drawer-link drawer-link-danger" href="/logout"><i
+                  class="fa-solid fa-right-from-bracket"></i><span>Log out</span></a>
+              <% } else { %>
+                <div class="drawer-divider"></div>
+                <a class="drawer-link" href="/signup"><i class="fa-solid fa-user-plus"></i><span>Sign up</span></a>
+                <a class="drawer-link drawer-link-primary" href="/login"><i
+                    class="fa-solid fa-right-to-bracket"></i><span>Log in</span></a>
+                <% } %>
+
+                  <div class="drawer-divider"></div>
+                  <!-- Settings -->
+                  <a class="drawer-link dark-mode-toggle" href="#" onclick="event.preventDefault();"><i
+                      class="fa-solid fa-moon dark-mode-icon"></i><span>Toggle Theme</span></a>
   </div>
 </div>
 
