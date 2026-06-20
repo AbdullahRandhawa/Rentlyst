@@ -1,6 +1,7 @@
 # 🏠 Rentlyst – AI-Powered Listing Platform For Renting & Selling
 
-Rentlyst is a ** rental and services marketplace application**. The project demonstrates building a complete data pipeline for semantic search and retrieval-augmented generation. Designed end-to-end workflows for data ingestion, cleaning, transformation, and embedding generation to power intelligent document retrieval. Implemented vector-based similarity matching using cosine distance and LLM-driven data preprocessing to surface relevant results through natural language queries. This platform empowers users to buy, sell, and rent diverse goods and services through an intelligent, category-driven interface powered by cutting-edge AI technologies.
+
+Rentlyst is a marketplace application. The project demonstrates building a complete data pipeline for semantic search and retrieval-augmented generation. Designed end-to-end workflows for data ingestion, cleaning, transformation, and embedding generation to power intelligent document retrieval. Implemented vector-based similarity matching using cosine distance and LLM-driven data preprocessing to surface relevant results through natural language queries. This platform empowers users to buy, sell, and rent diverse goods and services through an intelligent, category-driven interface powered by cutting-edge AI technologies.
 
 
 ---
